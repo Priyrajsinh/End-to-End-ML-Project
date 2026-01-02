@@ -2,21 +2,21 @@ import os
 import sys
 from dataclasses import dataclass
 
-from catboost import CatBoostRegressor
-from sklearn.ensemble import (
-    AdaBoostRegressor,
-    GradientBoostingRegressor,
-    RandomForestRegressor,
-)
-from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
-from sklearn.neighbors import KNeighborsRegressor
+from sklearn.model_selection import GridSearchCV
+from sklearn.linear_model import LinearRegression
 from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import (
+    RandomForestRegressor,
+    GradientBoostingRegressor,
+    AdaBoostRegressor,
+)
 from xgboost import XGBRegressor
+from catboost import CatBoostRegressor
 
 from src.exception import CustomException
 from src.logger import logger
-from src.utils import save_object, evaluate_models
+from src.utils import save_object
 
 
 @dataclass
@@ -26,63 +26,101 @@ class ModelTrainerConfig:
 
 class ModelTrainer:
     def __init__(self):
-        self.model_trainer_config = ModelTrainerConfig()
+        self.config = ModelTrainerConfig()
 
     def initiate_model_trainer(self, train_array, test_array):
         try:
-            logger.info("Splitting training and test input data")
+            logger.info("Splitting training and test data")
 
-            X_train, y_train, X_test, y_test = (
-                train_array[:, :-1],
-                train_array[:, -1],
-                test_array[:, :-1],
-                test_array[:, -1],
-            )
+            X_train, y_train = train_array[:, :-1], train_array[:, -1]
+            X_test, y_test = test_array[:, :-1], test_array[:, -1]
 
             models = {
-                "Random Forest": RandomForestRegressor(),
-                "Decision Tree": DecisionTreeRegressor(),
-                "Gradient Boosting": GradientBoostingRegressor(),
                 "Linear Regression": LinearRegression(),
-                "XGBRegressor": XGBRegressor(
-                    objective="reg:squarederror", eval_metric="rmse"
+                "Decision Tree": DecisionTreeRegressor(),
+                "Random Forest": RandomForestRegressor(),
+                "Gradient Boosting": GradientBoostingRegressor(),
+                "AdaBoost": AdaBoostRegressor(),
+                "XGBoost": XGBRegressor(
+                    objective="reg:squarederror",
+                    eval_metric="rmse"
                 ),
-                "CatBoosting Regressor": CatBoostRegressor(verbose=False),
-                "AdaBoost Regressor": AdaBoostRegressor(),
+                "CatBoost": CatBoostRegressor(verbose=False),
             }
 
-            model_report = evaluate_models(
-                X_train=X_train,
-                y_train=y_train,
-                X_test=X_test,
-                y_test=y_test,
-                models=models,
-            )
+            params = {
+                "Linear Regression": {},
+                "Decision Tree": {
+                    "criterion": ["squared_error", "friedman_mse"],
+                },
+                "Random Forest": {
+                    "n_estimators": [50, 100, 200],
+                },
+                "Gradient Boosting": {
+                    "learning_rate": [0.05, 0.1],
+                    "n_estimators": [100, 200],
+                },
+                "AdaBoost": {
+                    "learning_rate": [0.05, 0.1],
+                    "n_estimators": [50, 100],
+                },
+                "XGBoost": {
+                    "learning_rate": [0.05, 0.1],
+                    "n_estimators": [100, 200],
+                },
+                "CatBoost": {
+                    "depth": [6, 8],
+                    "learning_rate": [0.05, 0.1],
+                },
+            }
 
-            best_model_score = max(model_report.values())
+            best_score = -1
+            best_model = None
+            best_model_name = None
 
-            best_model_name = max(model_report, key=model_report.get)
-            best_model = models[best_model_name]
+            for model_name, model in models.items():
+                logger.info(f"Tuning model: {model_name}")
 
-            if best_model_score < 0.6:
-                raise CustomException("No best model found", sys)
+                param_grid = params[model_name]
+
+                if param_grid:
+                    gs = GridSearchCV(
+                        model,
+                        param_grid,
+                        cv=3,
+                        scoring="r2",
+                        n_jobs=-1
+                    )
+                    gs.fit(X_train, y_train)
+                    tuned_model = gs.best_estimator_
+                else:
+                    tuned_model = model
+                    tuned_model.fit(X_train, y_train)
+
+                predictions = tuned_model.predict(X_test)
+                score = r2_score(y_test, predictions)
+
+                logger.info(f"{model_name} R2 score: {score}")
+
+                if score > best_score:
+                    best_score = score
+                    best_model = tuned_model
+                    best_model_name = model_name
+
+            if best_score < 0.6:
+                raise CustomException("No suitable model found", sys)
 
             logger.info(
-                f"Best model found: {best_model_name} with R2 score: {best_model_score}"
+                f"Best model: {best_model_name} with R2 score: {best_score}"
             )
-
-            best_model.fit(X_train, y_train)
 
             save_object(
-                file_path=self.model_trainer_config.trained_model_file_path,
-                obj=best_model,
+                file_path=self.config.trained_model_file_path,
+                obj=best_model
             )
 
-            predicted = best_model.predict(X_test)
-            r2_square = r2_score(y_test, predicted)
-
-            return r2_square
+            return best_score
 
         except Exception as e:
-            logger.error("Error occurred in Model Trainer", exc_info=True)
+            logger.error("Error occurred in model trainer", exc_info=True)
             raise CustomException(e, sys)

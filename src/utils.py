@@ -5,6 +5,7 @@ from sklearn.metrics import r2_score
 
 from src.exception import CustomException
 from src.logger import logger
+from sklearn.model_selection import GridSearchCV
 
 
 def save_object(file_path, obj):
@@ -22,14 +23,28 @@ def save_object(file_path, obj):
         raise CustomException(e, sys)
 
 
-def evaluate_models(X_train, y_train, X_test, y_test, models):
+def evaluate_models(X_train, y_train, X_test, y_test, models, params):
     try:
         report = {}
 
         for model_name, model in models.items():
-            model.fit(X_train, y_train)
+            param_grid = params.get(model_name, {})
 
-            y_test_pred = model.predict(X_test)
+            if param_grid:
+                gs = GridSearchCV(
+                    model,
+                    param_grid,
+                    cv=3,
+                    scoring="r2",
+                    n_jobs=-1
+                )
+                gs.fit(X_train, y_train)
+                best_model = gs.best_estimator_
+            else:
+                best_model = model
+                best_model.fit(X_train, y_train)
+
+            y_test_pred = best_model.predict(X_test)
             test_model_score = r2_score(y_test, y_test_pred)
 
             report[model_name] = test_model_score
